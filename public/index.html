@@ -66,7 +66,9 @@
       });
       if (!ok) return show(data.error);
 
-      localStorage.setItem("token", data.token); // keep the "wristband"
+      // keep BOTH tokens now
+      localStorage.setItem("accessToken", data.accessToken);
+      localStorage.setItem("refreshToken", data.refreshToken);
       window.location.href = "/dashboard.html";
     });
   </script>

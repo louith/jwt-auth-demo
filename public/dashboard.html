@@ -15,31 +15,79 @@
   <button id="logout">Log out</button>
 
   <script>
-    const token = localStorage.getItem("token");
-    if (!token) window.location.href = "/index.html"; // no wristband, go back to login
+    let accessToken = localStorage.getItem("accessToken");
+    let refreshToken = localStorage.getItem("refreshToken");
+
+    function goToLogin() {
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      window.location.href = "/index.html";
+    }
+
+    // Single-flight: parallel 401s share one refresh call, so the server
+    // doesn't see the same refresh token twice and flag it as reuse.
+    let refreshing = null;
+    function refreshTokens() {
+      if (!refreshing) {
+        refreshing = (async () => {
+          const res = await fetch("/api/auth/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refreshToken }),
+          });
+          if (!res.ok) throw new Error("Refresh failed");
+
+          const data = await res.json();
+          accessToken = data.accessToken;
+          refreshToken = data.refreshToken; // rotated: the old one is now dead
+          localStorage.setItem("accessToken", accessToken);
+          localStorage.setItem("refreshToken", refreshToken);
+        })().finally(() => { refreshing = null; });
+      }
+      return refreshing;
+    }
+
+    // Use this instead of fetch() for any protected endpoint
+    async function authFetch(url, options = {}) {
+      const send = () =>
+        fetch(url, {
+          ...options,
+          headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` },
+        });
+
+      const res = await send();
+      if (res.status !== 401) return res;
+
+      try {
+        await refreshTokens();
+      } catch {
+        goToLogin(); // refresh token expired, revoked, or reused
+        return res;
+      }
+      return send(); // retry once with the new access token
+    }
 
     async function loadProfile() {
-      const res = await fetch("/api/users/me", {
-        headers: { Authorization: `Bearer ${token}` }, // send the token on every protected request
-      });
-
-      if (!res.ok) {
-        localStorage.removeItem("token"); // expired or invalid
-        window.location.href = "/index.html";
-        return;
-      }
+      const res = await authFetch("/api/users/me");
+      if (!res.ok) return goToLogin();
 
       const user = await res.json();
       document.getElementById("greeting").textContent = `Hello, ${user.name}`;
       document.getElementById("details").textContent = `Signed in as ${user.email}`;
     }
 
-    document.getElementById("logout").addEventListener("click", () => {
-      localStorage.removeItem("token"); // logging out = throwing the token away
-      window.location.href = "/index.html";
+    document.getElementById("logout").addEventListener("click", async () => {
+      // Revoke server-side so the refresh token is dead, not just forgotten
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken }),
+      }).catch(() => {});
+      goToLogin();
     });
 
-    loadProfile();
+    if (!refreshToken) goToLogin();
+    else loadProfile();
   </script>
 </body>
 </html>
